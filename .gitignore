@@ -1,0 +1,35 @@
+# Env & API Keys
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# VectorDB and Cache AI model
+vectorstore/
+*.sqlite3
+*.bin
+models/
+.cache/
+huggingface_tokenizers_cache/
+
+# Python Cache and Virtual Environment
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+env/
+finsight/
+
+# Hasil Ekstraksi
+# data/raw/*.xlsx
+# data/raw/*.pdf
+# data/processed/*.json
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
