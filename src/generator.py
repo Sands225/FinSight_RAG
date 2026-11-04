@@ -1,27 +1,32 @@
 import os
+import sys
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+
+# Pastikan import retriever dapat berjalan baik dari folder root maupun src
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from retriever import search_financial_docs
 
-# Muat GEMINI_API_KEY dari file .env
+# Muat environment variable dari .env
 load_dotenv()
 
-# Inisialisasi Client Gemini (Otomatis membaca GEMINI_API_KEY dari environment/.env)
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-MODEL_NAME = "gemini-3.5-flash-lite"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+DEFAULT_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
-SYSTEM_PROMPT = """Anda adalah FinSight, asisten analis keuangan dan akuntansi ahli khusus laporan keuangan emiten Bursa Efek Indonesia (BEI/IDX).
+SYSTEM_PROMPT = """Anda adalah FinSight, asisten analis keuangan dan akuntansi cerdas khusus laporan keuangan emiten Bursa Efek Indonesia (BEI/IDX).
 
 ATURAN KETAT ANALISIS KEUANGAN:
 1. Jawab pertanyaan pengguna HANYA berdasarkan [KONTEKS LAPORAN KEUANGAN] yang diberikan.
 2. JANGAN PERNAH menebak, mengarang, atau melakukan halusinasi angka. Jika data atau pos akun yang ditanyakan tidak ditemukan di dalam konteks, katakan secara eksplisit: "Maaf, informasi/pos akun tersebut tidak ditemukan pada bagian laporan keuangan yang tersedia."
-3. PERHATIKAN SATUAN ANGKA: Laporan keuangan BBCA disajikan dalam satuan **Jutaan Rupiah (In Million Rupiah)** kecuali untuk Laba per Saham (EPS) dan persentase suku bunga.
-   - Contoh: Jika tertulis di tabel `23.963.776` dengan satuan Jutaan Rupiah, sebutkan baik angka di tabel (`Rp 23.963.776 juta`) maupun konversinya ke triliun/miliar (`atau sekitar Rp 23,96 triliun`) agar mudah dipahami.
-4. PERHATIKAN PERIODE:
-   - `CurrentYearInstant` / `CurrentYearDuration` = Periode Berjalan (31 Maret 2026 / Kuartal I 2026).
-   - `PriorEndYearInstant` / `PriorYearDuration` = Periode Sebelumnya (31 Desember 2025 untuk Neraca, atau 31 Maret 2025 untuk Laba Rugi/Arus Kas).
-5. Selalu cantumkan **Sumber Bagian Laporan dan Kode Sheet** (misal: *[Sumber: Sheet 4220000 - Laporan Posisi Keuangan]*) di akhir penjelasan Anda.
+3. BACA SATUAN ANGKA: Periksa satuan angka yang tertera pada header konteks dokumen (misal: Jutaan / In Million, Ribuan, atau Rupiah penuh).
+   - Sebutkan angka asli pada tabel beserta satuan aslinya, lalu berikan konversinya (misal: miliar/triliun) agar mudah dipahami pembaca.
+4. BACA PERIODE & ENTITAS:
+   - Perhatikan Emiten dan Periode Tanggal pada header setiap dokumen konteks.
+   - `CurrentYearInstant` / `CurrentYearDuration` = Periode Berjalan yang sedang dianalisis.
+   - `PriorEndYearInstant` / `PriorYearDuration` = Periode Pembanding Sebelumnya.
+5. Selalu cantumkan **Kutipan Sumber Laporan & Kode Sheet** (misal: *[Sumber: Sheet 4220000 - Laporan Posisi Keuangan]*) di akhir penjelasan Anda.
 """
 
 def format_retrieved_context(retrieved_docs: list) -> str:
@@ -31,19 +36,54 @@ def format_retrieved_context(retrieved_docs: list) -> str:
         meta = doc["metadata"]
         block = (
             f"--- DOKUMEN #{idx} (Kode Sheet: {meta.get('sheet_code')} | "
-            f"Judul: {meta.get('sheet_title_id')}) ---\n"
+            f"Judul: {meta.get('sheet_title_id')} | "
+            f"Emiten: {meta.get('ticker')} | Periode: {meta.get('period')}) ---\n"
             f"{doc['content']}\n"
         )
         context_blocks.append(block)
     return "\n".join(context_blocks)
 
-def answer_query(query: str, retrieved_docs: list = None, top_k: int = 3) -> str:
-    """Mengambil konteks dari ChromaDB dan menghasilkan jawaban menggunakan Gemini Flash."""
+def answer_query(
+    query: str, 
+    ticker: str = None, 
+    year: str = None, 
+    quarter: str = None, 
+    top_k: int = 3, 
+    retrieved_docs: list = None,
+    model: str = None
+) -> tuple[str, list]:
+    """
+    Mengambil konteks dari ChromaDB dengan filter dinamis dan menghasilkan jawaban menggunakan Gemini.
+    Mengembalikan tuple: (jawaban_teks, daftar_dokumen_sumber).
+    """
+    if not client:
+        return "[ERROR]: GEMINI_API_KEY belum dikonfigurasi di file .env.", []
+        
+    # Ambil dokumen jika belum disediakan
     if retrieved_docs is None:
-        retrieved_docs = search_financial_docs(query, top_k=top_k)
+        retrieved_docs = search_financial_docs(
+            query=query, 
+            ticker=ticker, 
+            year=year, 
+            quarter=quarter, 
+            top_k=top_k
+        )
         
     if not retrieved_docs:
-        return "Maaf, tidak ada dokumen relevan yang ditemukan di dalam database."
+        filter_info = []
+        if ticker and ticker.lower() != "semua":
+            filter_info.append(f"Bank={ticker}")
+        if year and year.lower() != "semua":
+            filter_info.append(f"Tahun={year}")
+        if quarter and quarter.lower() != "semua":
+            filter_info.append(f"Kuartal={quarter}")
+            
+        filter_str = f" ({', '.join(filter_info)})" if filter_info else ""
+        return (
+            f"Maaf, tidak ada dokumen laporan keuangan yang cocok dengan filter{filter_str} di dalam database. "
+            "Silakan periksa pilihan filter atau pastikan file laporan telah di-ingest.",
+            []
+        )
         
     formatted_context = format_retrieved_context(retrieved_docs)
     
@@ -55,30 +95,58 @@ def answer_query(query: str, retrieved_docs: list = None, top_k: int = 3) -> str
 
 Berikan jawaban yang terstruktur, akurat, dan sertakan kutipan kode sheet sumbernya:"""
 
+    chosen_model = model or DEFAULT_MODEL_NAME
+
     try:
         response = client.models.generate_content(
-            model=MODEL_NAME,
+            model=chosen_model,
             contents=prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
-                temperature=0.0,  # 0.0 agar angka keuangan deterministik & bebas halusinasi
+                temperature=0.0,
             )
         )
-        return response.text
+        return response.text, retrieved_docs
     except Exception as e:
-        return f"[ERROR GEMINI]: Gagal menghubungi model ({e}). Pastikan GEMINI_API_KEY di file .env sudah benar."
+        # Fallback coba ke model standar flash jika model tertentu tidak tersedia
+        if "not found" in str(e).lower() or "404" in str(e):
+            try:
+                response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        temperature=0.0,
+                    )
+                )
+                return response.text, retrieved_docs
+            except Exception as e2:
+                return f"[ERROR GEMINI]: Gagal memanggil model ({e2}).", retrieved_docs
+        return f"[ERROR GEMINI]: Gagal menghubungi model ({e}).", retrieved_docs
 
 
 if __name__ == "__main__":
-    test_question = (
-        "Berapa jumlah Kas dan Laba Bersih (Jumlah laba rugi) BBCA pada periode berjalan "
-        "dibandingkan periode sebelumnya?"
+    print("=" * 60)
+    print("    FINSIGHT GENERATOR - ANALISIS KEUANGAN BERBASIS AI")
+    print("=" * 60)
+    
+    test_q = "Bagaimana laba perusahaan pada periode berjalan dibandingkan periode sebelumnya?"
+    test_bank = "BBCA"
+    test_year = "2026"
+    test_quarter = "Q1"
+    
+    print(f"Filter Uji : Bank={test_bank}, Tahun={test_year}, Kuartal={test_quarter}")
+    print(f"Pertanyaan : '{test_q}'\n")
+    print("Menghubungi FinSight RAG Pipeline...\n")
+    
+    answer, docs = answer_query(
+        query=test_q,
+        ticker=test_bank,
+        year=test_year,
+        quarter=test_quarter,
+        top_k=2
     )
-    print(f"Pertanyaan: {test_question}\n")
-    print("Mencari di ChromaDB dan menghubungi Gemini 2.5 Flash...\n")
     
-    docs = search_financial_docs(test_question, top_k=3)
-    jawaban = answer_query(test_question, retrieved_docs=docs)
-    
-    print("=== JAWABAN FINSIGHT (GEMINI FLASH) ===")
-    print(jawaban)
+    print("=== JAWABAN FINSIGHT ===")
+    print(answer)
+    print(f"\nTotal Dokumen Konteks Digunakan: {len(docs)}")
