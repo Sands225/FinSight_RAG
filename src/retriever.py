@@ -260,6 +260,28 @@ def build_vector_store(json_path: str = JSON_DATA_PATH, collection_name: str = C
         
     print(f"[2/2] Selesai! Total dokumen tersimpan di ChromaDB: {collection.count()}")
 
+def index_document_chunks(chunks: list, collection_name: str = COLLECTION_NAME) -> int:
+    """Mengindeks daftar chunk dokumen baru secara langsung ke ChromaDB."""
+    if not chunks:
+        return 0
+    collection = get_chroma_collection(collection_name)
+    ids, documents_for_embedding, metadatas = [], [], []
+    for item in chunks:
+        ids.append(item["id"])
+        documents_for_embedding.append(build_embedding_summary(item["page_content"], item["metadata"]))
+        metadatas.append(item["metadata"])
+        
+    batch_size = 100
+    total = len(chunks)
+    for start_idx in range(0, total, batch_size):
+        end_idx = min(start_idx + batch_size, total)
+        collection.upsert(
+            ids=ids[start_idx:end_idx],
+            documents=documents_for_embedding[start_idx:end_idx],
+            metadatas=metadatas[start_idx:end_idx]
+        )
+    return total
+
 def search_financial_docs(
     query: str, 
     ticker: str = None, 
