@@ -74,10 +74,14 @@ def get_chroma_client():
 def get_embedding_function():
     global _EMBEDDING_FN
     if _EMBEDDING_FN is None:
-        _EMBEDDING_FN = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL_NAME,
-            device="cpu"
-        )
+        try:
+            _EMBEDDING_FN = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=EMBEDDING_MODEL_NAME,
+                device="cpu"
+            )
+        except Exception:
+            # Fallback ke built-in ONNX embedding ChromaDB jika PyTorch belum terpasang
+            _EMBEDDING_FN = embedding_functions.DefaultEmbeddingFunction()
     return _EMBEDDING_FN
 
 def get_chroma_collection(collection_name: str = COLLECTION_NAME, with_embeddings: bool = True):
@@ -304,22 +308,41 @@ def search_financial_docs(
         
     # --- 1. DYNAMIC METADATA FILTERING (Bank, Tahun & Kuartal) ---
     where_conditions = []
+    clean_tickers = []
+    clean_years = []
+    clean_quarters = []
     
-    clean_ticker = str(ticker).strip().upper() if ticker and str(ticker).strip() and str(ticker).strip().lower() not in ["semua", "all", "none", ""] else None
-    if clean_ticker:
-        where_conditions.append({"ticker": clean_ticker})
-        
-    clean_year = str(year).strip() if year and str(year).strip() and str(year).strip().lower() not in ["semua", "all", "none", ""] else None
-    clean_quarter = str(quarter).strip() if quarter and str(quarter).strip() and str(quarter).strip().lower() not in ["semua", "all", "none", ""] else None
+    # Filter Ticker (Mendukung string tunggal, comma-separated, atau list)
+    if ticker:
+        raw_list = ticker if isinstance(ticker, list) else str(ticker).split(",")
+        clean_tickers = [str(t).strip().upper() for t in raw_list if str(t).strip() and str(t).strip().lower() not in ["semua", "all", "none", ""]]
+        if len(clean_tickers) == 1:
+            where_conditions.append({"ticker": clean_tickers[0]})
+        elif len(clean_tickers) > 1:
+            where_conditions.append({"ticker": {"$in": clean_tickers}})
 
-    resolved_period = period.strip() if period and str(period).strip() and str(period).strip().lower() not in ["semua", "all", "none", ""] else None
-    if not resolved_period and (clean_quarter or clean_year):
-        available_info = get_available_entities(collection_name)
-        ticker_periods = available_info.get(clean_ticker, []) if clean_ticker else [p for per_list in available_info.values() for p in per_list]
-        resolved_period = resolve_period_from_quarter(clean_quarter, year=clean_year, available_periods=ticker_periods)
-        
-    if resolved_period:
-        where_conditions.append({"period": resolved_period})
+    # Filter Tahun (Mendukung string tunggal, comma-separated, atau list)
+    if year:
+        raw_years = year if isinstance(year, list) else str(year).split(",")
+        clean_years = [str(y).strip() for y in raw_years if str(y).strip() and str(y).strip().lower() not in ["semua", "all", "none", ""]]
+        if len(clean_years) == 1:
+            where_conditions.append({"year": clean_years[0]})
+        elif len(clean_years) > 1:
+            where_conditions.append({"year": {"$in": clean_years}})
+
+    # Filter Kuartal (Mendukung string tunggal, comma-separated, atau list)
+    if quarter:
+        raw_q = quarter if isinstance(quarter, list) else str(quarter).split(",")
+        clean_quarters = [str(q).strip().upper() for q in raw_q if str(q).strip() and str(q).strip().lower() not in ["semua", "all", "none", ""]]
+        if len(clean_quarters) == 1:
+            where_conditions.append({"quarter": clean_quarters[0]})
+        elif len(clean_quarters) > 1:
+            where_conditions.append({"quarter": {"$in": clean_quarters}})
+
+    if period:
+        clean_period = str(period).strip()
+        if clean_period and clean_period.lower() not in ["semua", "all", "none", ""]:
+            where_conditions.append({"period": clean_period})
         
     if doc_type_filter:
         where_conditions.append({"doc_type": doc_type_filter})
@@ -369,10 +392,14 @@ def search_financial_docs(
     if "perubahan ekuitas" in q_lower or "modal saham" in q_lower or "saldo laba" in q_lower or "dividen" in q_lower:
         target_sheets.update(["4410000", "4410000PY"])
 
-    # Stopwords dinamis (kata umum + ticker yang sedang dicari)
+    # Stopwords dinamis (kata umum + ticker, tahun, kuartal yang sedang difilter)
     stopwords = {"berapa", "jumlah", "total", "nilai", "pada", "periode", "berjalan", "sebelumnya", "dan", "yang", "dari", "untuk", "apakah", "bagaimana", "tahun", "bank", "kuartal"}
-    if clean_ticker:
-        stopwords.add(clean_ticker.lower())
+    for t in clean_tickers:
+        stopwords.add(t.lower())
+    for y in clean_years:
+        stopwords.add(y.lower())
+    for q in clean_quarters:
+        stopwords.add(q.lower())
     query_terms = [w for w in re.findall(r"\w+", q_lower) if len(w) >= 3 and w not in stopwords]
 
     scored_candidates = []

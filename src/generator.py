@@ -13,7 +13,7 @@ load_dotenv()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
-DEFAULT_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+DEFAULT_MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 SYSTEM_PROMPT = """Anda adalah FinSight, asisten analis keuangan dan akuntansi cerdas khusus laporan keuangan emiten Bursa Efek Indonesia (BEI/IDX).
 
@@ -26,7 +26,18 @@ ATURAN KETAT ANALISIS KEUANGAN:
    - Perhatikan Emiten dan Periode Tanggal pada header setiap dokumen konteks.
    - `CurrentYearInstant` / `CurrentYearDuration` = Periode Berjalan yang sedang dianalisis.
    - `PriorEndYearInstant` / `PriorYearDuration` = Periode Pembanding Sebelumnya.
-5. Selalu cantumkan **Kutipan Sumber Laporan & Kode Sheet** (misal: *[Sumber: Sheet 4220000 - Laporan Posisi Keuangan]*) di akhir penjelasan Anda.
+5. PENGGUNAAN SITASI INLINE [1], [2], [3] (WAJIB):
+   - Gunakan format sitasi nomor inline [1], [2], atau [3] tepat setelah setiap data angka, rasio, pos akun, atau kalimat temuan yang Anda sebutkan.
+   - Tuliskan nomor sitasi MENEMPEL TEPAT di belakang kata atau angka TANPA SPASI di depannya, dan letakkan sebelum tanda titik (contoh: "Rp14,69 triliun[1].", JANGAN pernah menulis "Rp14,69 triliun [1] .").
+   - Nomor sitasi [1], [2], [3] HARUS sesuai dengan nomor DOKUMEN [1], DOKUMEN [2], dst. pada konteks. Jika merujuk ke lebih dari satu dokumen, gunakan format [1, 2].
+   - JANGAN menulis kutipan teks panjang seperti "[Sumber: Sheet ...]", cukup gunakan sitasi nomor [1] atau [2].
+6. FORMAT & STRUKTUR TAMPILAN INSTITUSIONAL:
+   - DILARANG KERAS menggunakan tag HTML mentah seperti `<br>`, `<br/>`, `<div>`, atau sejenisnya. Gunakan hanya baris baru kosong Markdown murni untuk membuat jarak visual.
+   - Sajikan jawaban secara terstruktur, rapi, dan nyaman dibaca oleh analis investasi.
+   - Jika membandingkan data beberapa periode (misal: kuartal Q1, Q2, Q3 atau tahun 2024 vs 2025), sajikan perbandingan angka dalam format TABEL MARKDOWN dengan satu struktur header kolom yang konsisten (tidak menggabungkan beberapa header tabel terpisah menjadi satu).
+   - Jika menyajikan rincian per periode menggunakan poin daftar (bullet/numbered):
+     * Setiap kuartal/periode WAJIB ditulis pada baris baru terpisah, jangan pernah menggabungkan beberapa kuartal ke dalam satu paragraf bersambung.
+     * Berikan jeda baris kosong antar sub-bagian agar tampilan terpisah dengan jelas.
 """
 
 def format_retrieved_context(retrieved_docs: list) -> str:
@@ -35,7 +46,7 @@ def format_retrieved_context(retrieved_docs: list) -> str:
     for idx, doc in enumerate(retrieved_docs, 1):
         meta = doc["metadata"]
         block = (
-            f"--- DOKUMEN #{idx} (Kode Sheet: {meta.get('sheet_code')} | "
+            f"--- DOKUMEN [{idx}] (Kode Sheet: {meta.get('sheet_code')} | "
             f"Judul: {meta.get('sheet_title_id')} | "
             f"Emiten: {meta.get('ticker')} | Periode: {meta.get('period')}) ---\n"
             f"{doc['content']}\n"
@@ -70,13 +81,25 @@ def answer_query(
         )
         
     if not retrieved_docs:
+        def format_filter_val(v):
+            if isinstance(v, list):
+                return ", ".join(str(item) for item in v)
+            return str(v)
+
+        def is_valid_filter(v):
+            if not v:
+                return False
+            if isinstance(v, list):
+                return any(str(item).lower() not in ["semua", "all", "none", ""] for item in v)
+            return str(v).lower() not in ["semua", "all", "none", ""]
+
         filter_info = []
-        if ticker and ticker.lower() != "semua":
-            filter_info.append(f"Bank={ticker}")
-        if year and year.lower() != "semua":
-            filter_info.append(f"Tahun={year}")
-        if quarter and quarter.lower() != "semua":
-            filter_info.append(f"Kuartal={quarter}")
+        if is_valid_filter(ticker):
+            filter_info.append(f"Bank={format_filter_val(ticker)}")
+        if is_valid_filter(year):
+            filter_info.append(f"Tahun={format_filter_val(year)}")
+        if is_valid_filter(quarter):
+            filter_info.append(f"Kuartal={format_filter_val(quarter)}")
             
         filter_str = f" ({', '.join(filter_info)})" if filter_info else ""
         return (
@@ -93,7 +116,7 @@ def answer_query(
 [PERTANYAAN PENGGUNA]
 {query}
 
-Berikan jawaban yang terstruktur, akurat, dan sertakan kutipan kode sheet sumbernya:"""
+Berikan jawaban analisis keuangan yang terstruktur, akurat, dan gunakan sitasi nomor dokumen inline seperti [1], [2] pada setiap data atau angka:"""
 
     chosen_model = model or DEFAULT_MODEL_NAME
 
